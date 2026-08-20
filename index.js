@@ -1,980 +1,542 @@
-/**********************************************************************************
- * YTPRO ULTIMATE PRO ENGINE v4.0.0 (ALL-IN-ONE)
- * Includes: SABR Downloader, BotGuard Minter, Gemini AI, MediaSession BgPlay,
- * Gesture Controls, SponsorBlock, RYD Dislikes, 10x Speed, Full AdBlocker
- **********************************************************************************/
+/**
+ * YTPro Next-Gen Modern Edition
+ * Redesigned UI + Fixed Gemini + Fixed Notification Buttons (Play/Pause/Next/Prev)
+ */
 
-(function() {
-  'use strict';
+if (null == window.eruda && "true" == localStorage.getItem("devMode")) {
+    var script = document.createElement("script");
+    script.src = "//youtube.com/ytpro_cdn/npm/eruda";
+    document.body.appendChild(script);
+    script.onload = () => eruda.init();
+}
 
-  // ==========================================
-  // 1. GLOBAL ENVIRONMENT & CONFIGURATION
-  // ==========================================
-  const YTProVer = "4.0.0";
-  let ytoldV = "";
-  window.PIPause = false;
-  window.isPIP = false;
-  window.pauseAllowed = true;
-  window.handlers = window.handlers || {};
-  window.serviceRunning = false;
-
-  let sTime = [];
-  let GeminiAT = "";
-  const GeminiModels = {
-    "3.0 Pro": '[1,null,null,null,"9d8ca3786ebdfbea",null,null,0,[4],null,null,1]',
-    "3.0 Flash": '[1,null,null,null,"fbb127bbb056c959",null,null,0,[4],null,null,1]',
-    "3.0 Flash Thinking": '[1,null,null,null,"5bf011840784117a",null,null,0,[4],null,null,1]',
-    "3.0 Pro Plus": '[1,null,null,null,"e6fa609c3fa255c0",null,null,0,[4],null,null,4]',
-    "3.0 Flash Plus": '[1,null,null,null,"56fdd199312815e2",null,null,0,[4],null,null,4]'
-  };
-
-  const YTPROCodecs = {
-    video: ["AV1", "VP8", "VP9", "H264"],
-    audio: ["Opus", "Mp4a"]
-  };
-
-  let touchStartY = 0, touchEndY = 0, pinchDistInitial = null;
-  let isPinching = false, zoomIn = false, currentScale = 1;
-  const sens = 0.005;
-  let vol = (typeof Android !== 'undefined' && Android.getVolume) ? Android.getVolume() : 0.5;
-  let brt = (typeof Android !== 'undefined' && Android.getBrightness) ? Android.getBrightness() / 100 : 0.5;
-  let dislikes = "...";
-
-  // Initialize Default LocalStorage
-  if (!localStorage.getItem("saveCInfo")) {
-    localStorage.setItem("autoSpn", "true");
-    localStorage.setItem("bgplay", "true");
-    localStorage.setItem("gesC", "true");
-    localStorage.setItem("gesM", "false");
-    localStorage.setItem("fzoom", "false");
-    localStorage.setItem("saveCInfo", "true");
-    localStorage.setItem("geminiModel", "3.0 Flash");
-    localStorage.setItem("prompt", "Give me details about this YouTube video Id: {videoId} , a detailed summary of timestamps with facts, resources and reviews.");
-    localStorage.setItem("devMode", "false");
-    localStorage.setItem("block_60fps", "false");
-    YTPROCodecs.video.forEach(k => localStorage.setItem(k, "true"));
-    YTPROCodecs.audio.forEach(k => localStorage.setItem(k, "true"));
-  }
-
-  // Developer mode Eruda console
-  if (typeof window.eruda === 'undefined' && localStorage.getItem("devMode") === "true") {
-    const scr = document.createElement("script");
-    scr.src = "//youtube.com/ytpro_cdn/npm/eruda";
-    scr.onload = () => window.eruda.init();
-    document.body.appendChild(scr);
-  }
-
-  const isD = true;
-  const c = "#ffffff";
-  const dc = "#121212";
-  const d = "rgba(255, 255, 255, 0.08)";
-
-  // ==========================================
-  // 2. CODEC OVERRIDE & EXPERIMENTAL ENGINE
-  // ==========================================
-  function overrideCodecs() {
-    const v = document.createElement("video");
-    const origCanPlay = v.canPlayType.bind(v);
-    v.__proto__.canPlayType = makeModifiedTypeChecker(origCanPlay);
-    if (window.MediaSource) {
-      const origIsTypeSupported = window.MediaSource.isTypeSupported.bind(window.MediaSource);
-      window.MediaSource.isTypeSupported = makeModifiedTypeChecker(origIsTypeSupported);
-    }
-  }
-
-  function makeModifiedTypeChecker(origFn) {
-    return function(type) {
-      if (!type) return "";
-      const blocked = [];
-      if (localStorage.getItem("H264") === "false") blocked.push("avc");
-      if (localStorage.getItem("VP8") === "false") blocked.push("vp8");
-      if (localStorage.getItem("VP9") === "false") blocked.push("vp9", "vp09");
-      if (localStorage.getItem("AV1") === "false") blocked.push("av01", "av99");
-      if (localStorage.getItem("Opus") === "false") blocked.push("opus");
-      if (localStorage.getItem("Mp4a") === "false") blocked.push("mp4a");
-
-      for (let b of blocked) {
-        if (type.includes(b)) return "";
-      }
-      if (localStorage.getItem("block_60fps") === "true") {
-        const match = /framerate=(\d+)/.exec(type);
-        if (match && parseInt(match[1]) > 30) return "";
-      }
-      return origFn(type);
-    };
-  }
-  overrideCodecs();
-
-  // ==========================================
-  // 3. BACKGROUND PLAYBACK & NOTIFICATION PANEL FIX
-  // ==========================================
-  if (typeof MediaMetadata === 'undefined') {
-    window.MediaMetadata = class {
-      constructor(data = {}) {
-        this.title = data.title || '';
-        this.artist = data.artist || '';
-        this.album = data.album || '';
-        this.artwork = data.artwork || [];
-      }
-    };
-  }
-
-  let _metaState = 'none';
-  let _currentMeta = null;
-
-  if (!('mediaSession' in navigator)) {
-    Object.defineProperty(navigator, 'mediaSession', { value: {}, configurable: true });
-  }
-
-  Object.defineProperty(navigator.mediaSession, 'metadata', {
-    get: () => _currentMeta,
-    set: (val) => {
-      bgPlaySync(val);
-      _currentMeta = val;
-    },
-    configurable: true
-  });
-
-  navigator.mediaSession.setActionHandler = (action, handler) => {
-    if (typeof handler === 'function') window.handlers[action] = handler;
-  };
-
-  Object.defineProperty(navigator.mediaSession, 'playbackState', {
-    get: () => _metaState,
-    set: (val) => {
-      _metaState = val;
-      const v = document.querySelector('video.video-stream') || document.querySelector('video');
-      if (!v) return;
-      if (val === 'playing') {
-        setTimeout(() => window.Android?.bgPlay?.(v.currentTime * 1000), 100);
-      } else if (val === 'paused' && (window.pauseAllowed || window.PIPause)) {
-        setTimeout(() => window.Android?.bgPause?.(v.currentTime * 1000), 100);
-      } else if (val === 'none') {
-        window.Android?.bgStop?.();
-        window.serviceRunning = false;
-      }
-    },
-    configurable: true
-  });
-
-  async function bgPlaySync(info) {
-    if (!info) return;
-    const v = document.querySelector('video.video-stream') || document.querySelector('video');
-    if (!v) return;
-
-    let iconBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-    const imgUrl = info?.artwork?.[0]?.src;
-
-    if (imgUrl) {
-      try {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.src = imgUrl;
-        await new Promise(r => { img.onload = r; img.onerror = r; });
-        const canvas = document.createElement('canvas');
-        canvas.width = 160;
-        canvas.height = 90;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, 160, 90);
-        iconBase64 = canvas.toDataURL('image/png', 0.9).replace("data:image/png;base64,", "");
-      } catch (e) {}
-    }
-
-    const durMs = (v.duration || 0) * 1000;
-    if (window.serviceRunning) {
-      setTimeout(() => window.Android?.bgUpdate?.(iconBase64, info.title, info.artist, durMs), 50);
-      setTimeout(() => window.Android?.bgPlay?.(v.currentTime * 1000), 100);
-    } else {
-      window.serviceRunning = true;
-      setTimeout(() => window.Android?.bgStart?.(iconBase64, info.title, info.artist, durMs), 50);
-      setTimeout(() => window.Android?.bgPlay?.(v.currentTime * 1000), 100);
-    }
-  }
-
-  // Robust Native Android Notification Callbacks (With Fallback Triggering)
-  window.seekTo = function(t) {
-    const v = document.querySelector('video.video-stream') || document.querySelector('video');
-    if (typeof window.handlers?.seekto === 'function') {
-      window.handlers.seekto({ seekTime: t / 1000 });
-    } else if (v) {
-      v.currentTime = t / 1000;
-    }
-  };
-
-  window.playVideo = function() {
+if (!window.YTProVer) {
+    window.YTProVer = "4.1.0-NextGen";
+    const origPause = HTMLMediaElement.prototype.pause;
+    const origPlay = HTMLMediaElement.prototype.play;
+    
+    // Notification & Background State Flags
+    window.userPaused = false;
+    window.pauseAllowed = true;
+    window.isPIP = false;
     window.PIPause = false;
-    navigator.mediaSession.playbackState = 'playing';
-    const v = document.querySelector('video.video-stream') || document.querySelector('video');
-    if (typeof window.handlers?.play === 'function') {
-      window.handlers.play();
-    } else if (v) {
-      v.play().catch(() => {});
-    }
-    const playBtn = document.querySelector('.ytp-play-button') || document.querySelector('button[aria-label="Play"]');
-    if (playBtn && v?.paused) playBtn.click();
-  };
+    
+    var sTime = [], GeminiAT = "";
 
-  window.pauseVideo = function() {
-    window.PIPause = true;
-    navigator.mediaSession.playbackState = 'paused';
-    const v = document.querySelector('video.video-stream') || document.querySelector('video');
-    if (typeof window.handlers?.pause === 'function') {
-      window.handlers.pause();
-    } else if (v) {
-      v.pause();
-    }
-    const pauseBtn = document.querySelector('.ytp-play-button') || document.querySelector('button[aria-label="Pause"]');
-    if (pauseBtn && !v?.paused) pauseBtn.click();
-  };
+    var GeminiModels = {
+        "3.0 Pro": '[1,null,null,null,"9d8ca3786ebdfbea",null,null,0,[4],null,null,1]',
+        "3.0 Flash": '[1,null,null,null,"fbb127bbb056c959",null,null,0,[4],null,null,1]',
+        "3.0 Flash Thinking": '[1,null,null,null,"5bf011840784117a",null,null,0,[4],null,null,1]',
+        "3.0 Pro Plus": '[1,null,null,null,"e6fa609c3fa255c0",null,null,0,[4],null,null,4]',
+        "3.0 Flash Plus": '[1,null,null,null,"56fdd199312815e2",null,null,0,[4],null,null,4]'
+    };
 
-  window.playNext = function() {
-    if (typeof window.handlers?.nexttrack === 'function') {
-      window.handlers.nexttrack();
-    } else {
-      const nextBtn = document.querySelector('.ytp-next-button') || 
-                      document.querySelector('button[aria-label="Next video"]') || 
-                      document.querySelector('button[aria-label="Next"]') ||
-                      document.querySelector('.next-button') ||
-                      document.querySelector('ytm-next-button-renderer');
-      if (nextBtn) {
-        nextBtn.click();
-      } else {
-        const nextLink = document.querySelector('ytm-video-with-context-renderer a, ytm-compact-video-renderer a');
-        if (nextLink) nextLink.click();
-      }
-    }
-  };
+    var YTPROCodecs = {
+        video: ["AV1", "VP8", "VP9", "H264"],
+        audio: ["Opus", "Mp4a"]
+    };
 
-  window.playPrev = function() {
-    if (typeof window.handlers?.previoustrack === 'function') {
-      window.handlers.previoustrack();
-    } else {
-      const prevBtn = document.querySelector('.ytp-prev-button') || 
-                      document.querySelector('button[aria-label="Previous video"]') || 
-                      document.querySelector('button[aria-label="Previous"]');
-      if (prevBtn) {
-        prevBtn.click();
-      } else {
-        const v = document.querySelector('video.video-stream') || document.querySelector('video');
-        if (v) v.currentTime = 0;
-      }
-    }
-  };
+    var vol = typeof Android !== "undefined" && Android.getVolume ? Android.getVolume() : 0.5;
+    var brt = typeof Android !== "undefined" && Android.getBrightness ? Android.getBrightness() / 100 : 0.5;
 
-  // ==========================================
-  // 4. AD-BLOCKING & NETWORK FILTERS
-  // ==========================================
-  const origFetch = window.fetch;
-  window.fetch = async function(input, init) {
-    try {
-      const url = typeof input === "string" ? input : input.url;
-      if (url.includes("googleads.g.doubleclick.net") || 
-          url.includes("youtube.com/youtubei/v1/player/ad_break") || 
-          url.includes("youtube.com/pagead/adview") || 
-          url.includes("youtube.com/api/stats/ads")) {
-        return new Response("", { status: 200 });
-      }
-      if (url.includes("youtube.com/youtubei/")) {
-        const res = await origFetch.apply(this, arguments);
-        try {
-          const cloned = res.clone();
-          let json = await cloned.json();
-          delete json?.adSlots;
-          delete json?.playerAds;
-          delete json?.adPlacements;
-          delete json?.adBreakHeartbeatParams;
-          if (json?.[0]?.playerResponse) {
-            delete json[0].playerResponse.adSlots;
-            delete json[0].playerResponse.playerAds;
-            delete json[0].playerResponse.adPlacements;
-          }
-          const bodyStr = JSON.stringify(json);
-          const headers = new Headers(res.headers);
-          headers.set("content-length", String(bodyStr.length));
-          headers.set("content-type", "application/json");
-          return new Response(bodyStr, { status: res.status, statusText: res.statusText, headers });
-        } catch (e) {
-          return res;
+    // Default Configuration
+    if (!localStorage.getItem("saveCInfo")) {
+        localStorage.setItem("autoSpn", "true");
+        localStorage.setItem("bgplay", "true");
+        localStorage.setItem("gesC", "true");
+        localStorage.setItem("gesM", "false");
+        localStorage.setItem("fzoom", "false");
+        localStorage.setItem("saveCInfo", "true");
+        localStorage.setItem("geminiModel", "3.0 Flash");
+        localStorage.setItem("prompt", "Analyze this YouTube video (Title: {title}, ID: {videoId}). Give an insightful summary, key takeaways, and timestamp highlights.");
+        localStorage.setItem("devMode", "false");
+        localStorage.setItem("block_60fps", "false");
+        localStorage.setItem("loopVideo", "false");
+        YTPROCodecs.video.forEach(e => localStorage.setItem(e, "true"));
+        YTPROCodecs.audio.forEach(e => localStorage.setItem(e, "true"));
+    }
+
+    var isD = document.cookie.indexOf("f6=40000") > -1 || window.matchMedia("(prefers-color-scheme: dark)").matches;
+    var c = isD ? "#ffffff" : "#0f0f0f";
+    var dc = isD ? "#0f0f0f" : "#ffffff";
+    var bgGlass = isD ? "rgba(24, 24, 27, 0.85)" : "rgba(255, 255, 255, 0.88)";
+    var cardBg = isD ? "rgba(255, 255, 255, 0.07)" : "rgba(0, 0, 0, 0.04)";
+    var borderGlass = isD ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.08)";
+
+    // Modern SVG Icons
+    var Icons = {
+        settings: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>`,
+        download: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>`,
+        heart: `<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`,
+        sparkles: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="url(#geminiGrad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><defs><linearGradient id="geminiGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#4285F4"/><stop offset="50%" stop-color="#9B72CB"/><stop offset="100%" stop-color="#D96570"/></linearGradient></defs><path d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2z"/></svg>`,
+        trash: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`,
+        play: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>`,
+        skip: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>`,
+        hand: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5"></path><path d="M14 10V4a2 2 0 0 0-4 0v7"></path><path d="M10 10.5V6a2 2 0 0 0-4 0v8"></path><path d="M6 14v1a6 6 0 0 0 12 0v-4"></path></svg>`,
+        repeat: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>`,
+        code: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>`,
+        chevron: `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>`
+    };
+
+    // ==========================================
+    // 1. SMART BACKGROUND & PAUSE/PLAY OVERRIDE
+    // ==========================================
+    HTMLMediaElement.prototype.pause = function () {
+        // If pause is requested by the user, media session, or PIP mode, allow it!
+        if (window.userPaused || window.pauseAllowed || window.PIPause || document.visibilityState === "visible") {
+            return origPause.apply(this, arguments);
         }
-      }
-    } catch (err) {}
-    return origFetch.apply(this, arguments);
-  };
-
-  const origXhrOpen = XMLHttpRequest.prototype.open;
-  const origXhrSend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-    this._reqUrl = url;
-    return origXhrOpen.apply(this, [method, url, ...rest]);
-  };
-  XMLHttpRequest.prototype.send = function(...args) {
-    if (this._reqUrl && (
-      this._reqUrl.includes("googleads.g.doubleclick.net") ||
-      this._reqUrl.includes("youtube.com/youtubei/v1/player/ad_break") ||
-      this._reqUrl.includes("youtube.com/pagead/adview") ||
-      this._reqUrl.includes("youtube.com/api/stats/ads")
-    )) {
-      return;
-    }
-    return origXhrSend.apply(this, args);
-  };
-
-  function cleanupAds() {
-    try { document.querySelector(".video-stream")?.removeAttribute("disablepictureinpicture"); } catch (e) {}
-    document.querySelectorAll("ad-slot-renderer, ytm-promoted-sparkles-web-renderer, ytm-companion-ad-renderer, ytm-paid-content-overlay-renderer").forEach(el => el.remove());
-    try {
-      const adVideo = document.querySelector(".ad-interrupting video");
-      if (adVideo) {
-        adVideo.currentTime = adVideo.duration || 999;
-        document.querySelector(".ytp-ad-skip-button-modern")?.click();
-      }
-    } catch (e) {}
-    if (localStorage.getItem("shorts") === "true") {
-      document.querySelectorAll(".big-shorts-singleton, ytm-reel-shelf-renderer, ytm-shorts-lockup-view-model").forEach(e => e.remove());
-    }
-  }
-
-  // ==========================================
-  // 5. SPONSORBLOCK & RETURN DISLIKES
-  // ==========================================
-  function formatCompactNumber(num) {
-    if (num < 1000) return num.toString();
-    const b = Math.floor(Math.log10(num) - 2);
-    const a = b + (b % 3 ? 1 : 0);
-    const val = Math.floor(num / 10 ** a) * 10 ** a;
-    return Intl.NumberFormat(navigator.language || 'en', { notation: "compact", compactDisplay: "short" }).format(val);
-  }
-
-  async function fetchDislikes(urlStr) {
-    try {
-      const u = new URL(urlStr);
-      let vidId = u.pathname.includes("shorts") ? u.pathname.split("/").pop() : u.searchParams.get("v");
-      if (!vidId) return;
-      const res = await fetch(`https://returnyoutubedislikeapi.com/votes?videoId=${vidId}`);
-      const data = await res.json();
-      if (data?.dislikes) {
-        dislikes = formatCompactNumber(parseInt(data.dislikes));
-        updateDislikeDOM();
-      }
-    } catch (e) {}
-  }
-
-  function updateDislikeDOM() {
-    try {
-      const dislikeBtn = document.querySelector("dislike-button-view-model");
-      if (dislikeBtn) {
-        let label = dislikeBtn.querySelector("#diskl");
-        if (!label) {
-          label = document.createElement("span");
-          label.id = "diskl";
-          label.style.marginLeft = "6px";
-          label.style.fontSize = "12px";
-          dislikeBtn.appendChild(label);
+        
+        // Only prevent unwanted pauses caused by background tab switching
+        if (localStorage.getItem("bgplay") === "true") {
+            return origPlay.apply(this, arguments).catch(() => {});
         }
-        label.textContent = dislikes;
-      }
-    } catch (e) {}
-  }
+        return origPause.apply(this, arguments);
+    };
 
-  async function checkSponsors(urlStr) {
-    if (!urlStr.includes("watch")) return;
-    try {
-      sTime = [];
-      const vidId = new URL(urlStr).searchParams.get("v");
-      const res = await fetch(`https://sponsor.ajay.app/api/skipSegments?videoID=${vidId}`);
-      const data = await res.json();
-      if (Array.isArray(data)) sTime = data.map(s => s.segment);
+    // ==========================================
+    // 2. COMPLETE MEDIA SESSION & NOTIFICATION HANDLER
+    // ==========================================
+    function setupMediaSession() {
+        if (!("mediaSession" in navigator)) return;
 
-      const v = document.querySelector(".video-stream");
-      if (v) {
-        v.ontimeupdate = () => {
-          const cur = v.currentTime;
-          for (let seg of sTime) {
-            if (Math.floor(cur) === Math.floor(seg[0]) && localStorage.getItem("autoSpn") === "true") {
-              v.currentTime = seg[1];
-              showSponsorToast(seg[0]);
-            }
-          }
-        };
-      }
-    } catch (e) {}
-  }
+        const vInfo = getVideoInfo();
+        const video = document.querySelector("video");
 
-  function showSponsorToast(rewindTo) {
-    const toast = document.createElement("div");
-    toast.className = "ytpro-toast";
-    toast.innerHTML = `
-      <span>⚡ Sponsor Skipped</span>
-      <button id="spnRewind">Rewind</button>
-    `;
-    document.body.appendChild(toast);
-    toast.querySelector("#spnRewind")?.addEventListener("click", () => {
-      const v = document.querySelector(".video-stream");
-      if (v) v.currentTime = rewindTo + 1;
-      toast.remove();
-    });
-    setTimeout(() => toast.remove(), 4000);
-  }
-
-  // ==========================================
-  // 6. MODERN GLASSMORPHIC UI STYLING
-  // ==========================================
-  const modernStyle = document.createElement("style");
-  modernStyle.innerHTML = `
-    .ytpro-modal {
-      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75);
-      backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
-      z-index: 9999999; display: flex; justify-content: center; align-items: flex-end;
-      animation: ytproFadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-    .ytpro-sheet {
-      width: 94%; max-width: 520px; max-height: 82vh;
-      background: #121215ee; border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 28px 28px 18px 18px; margin-bottom: 15px; padding: 20px;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.85); overflow-y: auto; color: #fff;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    }
-    .ytpro-header {
-      display: flex; align-items: center; justify-content: space-between;
-      padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 15px;
-    }
-    .ytpro-header h2 {
-      margin: 0; font-size: 19px; font-weight: 700;
-      background: linear-gradient(135deg, #ffffff 0%, #3ea6ff 100%);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    }
-    .ytpro-item {
-      display: flex; align-items: center; justify-content: space-between;
-      background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: 16px; padding: 12px 16px; margin-bottom: 8px; font-size: 14px;
-      font-weight: 500; transition: transform 0.15s ease, background 0.2s ease; cursor: pointer;
-    }
-    .ytpro-item:active { transform: scale(0.98); background: rgba(255, 255, 255, 0.08); }
-    .ytpro-item-left { display: flex; align-items: center; gap: 12px; }
-    .ytpro-switch {
-      position: relative; width: 44px; height: 24px; background: rgba(255,255,255,0.15);
-      border-radius: 20px; transition: background 0.25s ease;
-    }
-    .ytpro-switch.active { background: #3ea6ff; }
-    .ytpro-switch-handle {
-      position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
-      background: #fff; border-radius: 50%; transition: transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-    }
-    .ytpro-switch.active .ytpro-switch-handle { transform: translateX(20px); }
-    .ytpro-toast {
-      position: fixed; bottom: 85px; left: 50%; transform: translateX(-50%);
-      background: rgba(20, 20, 25, 0.9); backdrop-filter: blur(20px);
-      border: 1px solid rgba(255, 255, 255, 0.15); padding: 10px 18px; border-radius: 30px;
-      color: #fff; z-index: 99999999; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-      display: flex; align-items: center; gap: 12px; font-size: 13px; font-weight: 600;
-      animation: ytproToastIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-    .ytpro-toast button {
-      background: rgba(255, 255, 255, 0.15); border: none; color: #fff;
-      border-radius: 12px; padding: 4px 10px; font-size: 12px; font-weight: 600;
-    }
-    @keyframes ytproFadeIn { from { opacity: 0; } to { opacity: 1; } }
-    @keyframes ytproToastIn { from { opacity: 0; transform: translate(-50%, 20px); } to { opacity: 1; transform: translate(-50%, 0); } }
-  `;
-  document.head.appendChild(modernStyle);
-
-  // SVG Icons Pack
-  const icons = {
-    settings: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
-    download: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
-    heart: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`,
-    sparkles: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg>`,
-    pip: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="10" width="8" height="6" rx="1"/></svg>`,
-    zap: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
-    sliders: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/></svg>`,
-    codecs: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`
-  };
-
-  // ==========================================
-  // 7. MODERN SETTINGS MODAL
-  // ==========================================
-  function openSettings() {
-    const modal = document.createElement("div");
-    modal.className = "ytpro-modal";
-    modal.id = "settingsprodiv";
-
-    const createToggleItem = (key, title, icon) => `
-      <div class="ytpro-item" data-action="toggle" data-key="${key}">
-        <div class="ytpro-item-left">
-          ${icon}
-          <span>${title}</span>
-        </div>
-        <div class="ytpro-switch ${localStorage.getItem(key) === "true" ? "active" : ""}">
-          <div class="ytpro-switch-handle"></div>
-        </div>
-      </div>
-    `;
-
-    modal.innerHTML = `
-      <div class="ytpro-sheet">
-        <div class="ytpro-header">
-          <h2>YTPRO Studio <span style="font-size:11px;font-weight:400;opacity:0.5;">v${YTProVer}</span></h2>
-          <button style="background:transparent;border:none;color:#fff;font-size:18px;cursor:pointer;" id="ytproClose">✕</button>
-        </div>
-
-        <div class="ytpro-item" data-action="openDownloadHub" style="background:rgba(62,166,255,0.12);border-color:rgba(62,166,255,0.3);">
-          <div class="ytpro-item-left">
-            ${icons.download}
-            <span style="font-weight:700;color:#3ea6ff;">Fast Media & SABR Downloader</span>
-          </div>
-          <span style="color:#3ea6ff;font-size:16px;">➔</span>
-        </div>
-
-        <div class="ytpro-item" data-action="openHearts">
-          <div class="ytpro-item-left">
-            ${icons.heart}
-            <span>Liked Videos Library</span>
-          </div>
-          <span>➔</span>
-        </div>
-
-        ${createToggleItem("autoSpn", "Auto-Skip Sponsor Segments", icons.zap)}
-        ${createToggleItem("bgplay", "Background Playback", icons.pip)}
-        ${createToggleItem("gesC", "Volume / Brightness Touch Gestures", icons.sliders)}
-        ${createToggleItem("gesM", "Swipe Down Miniplayer", icons.sliders)}
-        ${createToggleItem("shorts", "Hide Shorts Feed", icons.sliders)}
-        ${createToggleItem("block_60fps", "Block 60FPS Video (Save Battery)", icons.sliders)}
-        ${createToggleItem("devMode", "Developer Console (Eruda)", icons.sparkles)}
-
-        <div class="ytpro-item" data-action="geminiModels">
-          <div class="ytpro-item-left">
-            ${icons.sparkles}
-            <span>Select Gemini AI Model</span>
-          </div>
-          <span style="font-size:12px;opacity:0.6;">${localStorage.getItem("geminiModel")} ➔</span>
-        </div>
-
-        <div class="ytpro-item" data-action="geminiPrompt">
-          <div class="ytpro-item-left">
-            ${icons.sparkles}
-            <span>Edit AI Summary Prompt</span>
-          </div>
-          <span>➔</span>
-        </div>
-
-        <div class="ytpro-item" data-action="codecsModal">
-          <div class="ytpro-item-left">
-            ${icons.codecs}
-            <span>Hardware Codecs Manager</span>
-          </div>
-          <span>➔</span>
-        </div>
-
-        <p style="font-size:11px;opacity:0.4;text-align:center;margin-top:20px;">YTPRO Ultimate Edition • Built for New Gen Experience</p>
-      </div>
-    `;
-
-    modal.addEventListener("click", (e) => {
-      if (e.target === modal || e.target.id === "ytproClose") modal.remove();
-
-      const item = e.target.closest("[data-action]");
-      if (!item) return;
-
-      const act = item.dataset.action;
-      if (act === "toggle") {
-        const key = item.dataset.key;
-        const current = localStorage.getItem(key) === "true";
-        const updated = current ? "false" : "true";
-        localStorage.setItem(key, updated);
-        item.querySelector(".ytpro-switch").classList.toggle("active", updated === "true");
-        if (key === "bgplay") window.Android?.setBgPlay?.(updated === "true");
-      } else if (act === "openDownloadHub") {
-        modal.remove();
-        window.ytproSabrDownload();
-      } else if (act === "openHearts") {
-        modal.remove();
-        showHeartsLibrary();
-      } else if (act === "geminiModels") {
-        const modelNames = Object.keys(GeminiModels);
-        const selected = prompt(`Select Model:\n${modelNames.map((m, i) => `${i + 1}. ${m}`).join("\n")}`, "2");
-        if (selected && modelNames[parseInt(selected) - 1]) {
-          localStorage.setItem("geminiModel", modelNames[parseInt(selected) - 1]);
-          modal.remove();
-          openSettings();
-        }
-      } else if (act === "geminiPrompt") {
-        const currentP = localStorage.getItem("prompt");
-        const newP = prompt("Edit Gemini AI Prompt Template:", currentP);
-        if (newP) localStorage.setItem("prompt", newP);
-      } else if (act === "codecsModal") {
-        alert("All codecs (AV1, VP9, H264, Opus, Mp4a) are automatically hardware-accelerated.");
-      }
-    });
-
-    document.body.appendChild(modal);
-  }
-
-  // ==========================================
-  // 8. LIKED VIDEOS ("HEARTS") LIBRARY
-  // ==========================================
-  function toggleHeart() {
-    const vidId = new URLSearchParams(window.location.search).get("v") || window.location.pathname.replace("/shorts/", "");
-    if (!vidId) return;
-
-    let hearts = JSON.parse(localStorage.getItem("hearts") || "{}");
-    const v = document.querySelector("video.video-stream") || document.querySelector("video");
-    const title = document.querySelector(".slim-video-metadata-header")?.textContent || 
-                  document.querySelector(".ytShortsVideoTitleViewModelShortsVideoTitle")?.textContent || "Video";
-
-    if (hearts[vidId]) {
-      delete hearts[vidId];
-      localStorage.setItem("hearts", JSON.stringify(hearts));
-      window.Android?.showToast?.("Removed from Liked Library");
-    } else {
-      let thumb = "";
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = 320;
-        canvas.height = 180;
-        const ctx = canvas.getContext("2d");
-        if (v) ctx.drawImage(v, 0, 0, 320, 180);
-        thumb = canvas.toDataURL("image/jpeg", 0.7);
-      } catch (e) {}
-
-      hearts[vidId] = { title, thumb: thumb || `https://i.ytimg.com/vi/${vidId}/hqdefault.jpg` };
-      localStorage.setItem("hearts", JSON.stringify(hearts));
-      window.Android?.showToast?.("Saved to Liked Library ❤️");
-    }
-  }
-
-  function showHeartsLibrary() {
-    const modal = document.createElement("div");
-    modal.className = "ytpro-modal";
-    const hearts = JSON.parse(localStorage.getItem("hearts") || "{}");
-    const keys = Object.keys(hearts);
-
-    let listHtml = "";
-    if (keys.length === 0) {
-      listHtml = `<div style="text-align:center;padding:30px;opacity:0.6;">No saved videos found.</div>`;
-    } else {
-      keys.reverse().forEach(k => {
-        const item = hearts[k];
-        listHtml += `
-          <div class="ytpro-item" data-watch-id="${k}" style="gap:12px;">
-            <img src="${item.thumb}" style="width:90px;height:55px;border-radius:10px;object-fit:cover;">
-            <div style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;">${item.title}</div>
-            <button data-delete-id="${k}" style="background:transparent;border:none;color:#ff4444;font-size:16px;">✕</button>
-          </div>
-        `;
-      });
-    }
-
-    modal.innerHTML = `
-      <div class="ytpro-sheet">
-        <div class="ytpro-header">
-          <h2>Liked Videos ❤️</h2>
-          <button style="background:transparent;border:none;color:#fff;font-size:18px;" id="heartsClose">✕</button>
-        </div>
-        <div style="max-height:60vh;overflow-y:auto;">${listHtml}</div>
-      </div>
-    `;
-
-    modal.addEventListener("click", (e) => {
-      if (e.target === modal || e.target.id === "heartsClose") modal.remove();
-
-      const delBtn = e.target.closest("[data-delete-id]");
-      if (delBtn) {
-        const id = delBtn.dataset.deleteId;
-        delete hearts[id];
-        localStorage.setItem("hearts", JSON.stringify(hearts));
-        modal.remove();
-        showHeartsLibrary();
-        return;
-      }
-
-      const watchItem = e.target.closest("[data-watch-id]");
-      if (watchItem) {
-        modal.remove();
-        window.location.href = `/watch?v=${watchItem.dataset.watchId}`;
-      }
-    });
-
-    document.body.appendChild(modal);
-  }
-
-  // ==========================================
-  // 9. HIGH-SPEED SABR DOWNLOADER & BOTGUARD MINTER
-  // ==========================================
-  window.ytproSabrDownload = async function() {
-    let videoId = window.location.pathname.includes("shorts") ? 
-                  window.location.pathname.split("/").pop() : 
-                  new URLSearchParams(window.location.search).get("v");
-
-    if (!videoId) {
-      window.Android?.showToast?.("No active video found.");
-      return;
-    }
-
-    const modal = document.createElement("div");
-    modal.className = "ytpro-modal";
-    modal.id = "ytproDlModal";
-    modal.innerHTML = `
-      <div class="ytpro-sheet" style="text-align:center;">
-        <div class="ytpro-header">
-          <h2>Downloads & SABR Hub</h2>
-          <button style="background:transparent;border:none;color:#fff;font-size:18px;" onclick="document.getElementById('ytproDlModal').remove()">✕</button>
-        </div>
-        <div id="dlLoader" style="padding:30px 0;font-size:14px;color:#aaa;">
-          ⚡ Initializing SABR Stream Engine...
-        </div>
-        <div id="dlBody" style="display:none;text-align:left;"></div>
-      </div>
-    `;
-    document.body.appendChild(modal);
-
-    try {
-      const { Innertube, Platform } = await import('https://cdn.jsdelivr.net/npm/youtubei.js@17.0.1/bundle/browser.min.js');
-      const { SabrStream } = await import('https://esm.sh/googlevideo@4.0.4/sabr-stream');
-      const { buildSabrFormat, EnabledTrackTypes } = await import('https://esm.sh/googlevideo@4.0.4/utils');
-
-      Platform.shim.eval = async (data, env) => {
-        const props = [];
-        if (env.n) props.push(`n: exportedVars.nFunction("${env.n}")`);
-        if (env.sig) props.push(`sig: exportedVars.sigFunction("${env.sig}")`);
-        return new Function(`${data.output}\nreturn { ${props.join(', ')} }`)();
-      };
-
-      const cookies = window.Android?.getAllCookies?.('https://www.youtube.com') ?? '';
-      const yt = await Innertube.create({ cookie: cookies, retrieve_player: true, generate_session_locally: true });
-      const info = await yt.getBasicInfo(videoId, { client: 'WEB' });
-      const streamingData = info.streaming_data;
-
-      if (!streamingData) throw new Error("Could not extract stream data");
-
-      const formats = streamingData.adaptive_formats || [];
-      const dlLoader = modal.querySelector("#dlLoader");
-      const dlBody = modal.querySelector("#dlBody");
-      dlLoader.style.display = "none";
-      dlBody.style.display = "block";
-
-      const safeTitle = (info.basic_info?.title || "YTPRO_Media").replace(/[\/\\?%*:|"<>]/g, '-');
-      const videoOnly = formats.filter(f => f.has_video && !f.has_audio);
-      const audioOnly = formats.filter(f => f.has_audio && !f.has_video);
-
-      let html = `<div style="font-size:13px;font-weight:700;margin-bottom:10px;color:#3ea6ff;">📹 High-Definition Video (Muxed):</div>`;
-      videoOnly.slice(0, 5).forEach(v => {
-        const mb = v.content_length ? (parseInt(v.content_length) / (1024 * 1024)).toFixed(1) + " MB" : "HQ Stream";
-        html += `
-          <div class="ytpro-item" data-v-itag="${v.itag}" data-a-itag="${audioOnly[0]?.itag || ''}">
-            <div class="ytpro-item-left">
-              ${icons.download}
-              <span>${v.quality_label || 'HD'} (${v.container || 'mp4'})</span>
-            </div>
-            <span style="font-size:12px;opacity:0.7;">${mb}</span>
-          </div>
-        `;
-      });
-
-      html += `<div style="font-size:13px;font-weight:700;margin:16px 0 10px 0;color:#3ea6ff;">🎵 High-Bitrate Audio:</div>`;
-      audioOnly.slice(0, 2).forEach(a => {
-        const mb = a.content_length ? (parseInt(a.content_length) / (1024 * 1024)).toFixed(1) + " MB" : "HQ Audio";
-        html += `
-          <div class="ytpro-item" data-audio-only="${a.itag}">
-            <div class="ytpro-item-left">
-              ${icons.download}
-              <span>Audio (${a.audio_quality || 'High'})</span>
-            </div>
-            <span style="font-size:12px;opacity:0.7;">${mb}</span>
-          </div>
-        `;
-      });
-
-      dlBody.innerHTML = html;
-
-      dlBody.addEventListener("click", async (e) => {
-        const item = e.target.closest(".ytpro-item");
-        if (!item) return;
-        modal.remove();
-
-        startFastSabrDownload({
-          info, yt, safeTitle,
-          vItag: item.dataset.vItag,
-          aItag: item.dataset.aItag,
-          audioOnlyItag: item.dataset.audioOnly,
-          SabrStream, buildSabrFormat, EnabledTrackTypes
+        // Update Notification Metadata (Title, Channel, High-Res Cover Art)
+        navigator.mediaSession.metadata = new MediaMetadata({
+            title: vInfo.title || "YouTube Video",
+            artist: vInfo.author || "YouTube",
+            album: "YouTube Pro",
+            artwork: [
+                { src: `https://i.ytimg.com/vi/${vInfo.videoId}/hqdefault.jpg`, sizes: "480x360", type: "image/jpeg" },
+                { src: `https://i.ytimg.com/vi/${vInfo.videoId}/maxresdefault.jpg`, sizes: "1280x720", type: "image/jpeg" }
+            ]
         });
-      });
 
-    } catch (err) {
-      modal.querySelector("#dlLoader").innerHTML = `<span style="color:#ff5555;">⚠️ Error: ${err.message}</span>`;
-    }
-  };
+        // 1. PLAY BUTTON Action
+        navigator.mediaSession.setActionHandler("play", () => {
+            window.userPaused = false;
+            window.pauseAllowed = true;
+            const vid = document.querySelector("video");
+            if (vid) {
+                vid.play();
+                navigator.mediaSession.playbackState = "playing";
+            }
+        });
 
-  async function startFastSabrDownload({ info, yt, safeTitle, vItag, aItag, audioOnlyItag, SabrStream, buildSabrFormat, EnabledTrackTypes }) {
-    window.Android?.showToast?.("⚡ Download Initiated...");
-    const indicator = createLiveDownloadIndicator();
+        // 2. PAUSE BUTTON Action
+        navigator.mediaSession.setActionHandler("pause", () => {
+            window.userPaused = true;
+            window.pauseAllowed = true;
+            const vid = document.querySelector("video");
+            if (vid) {
+                origPause.apply(vid);
+                navigator.mediaSession.playbackState = "paused";
+            }
+        });
 
-    try {
-      const streamingData = info.streaming_data;
-      const sabrFormats = (streamingData.adaptive_formats || []).map(f => buildSabrFormat(f));
-      const serverAbrUrl = await yt.session.player.decipher(streamingData.server_abr_streaming_url);
+        // 3. NEXT TRACK BUTTON Action
+        navigator.mediaSession.setActionHandler("nexttrack", () => {
+            window.userPaused = false;
+            const nextBtn = document.querySelector(".ytp-next-button") || 
+                            document.querySelector(".next-button") || 
+                            document.querySelector("button[aria-label='Next video']") ||
+                            document.querySelector("ytm-next-button-renderer button");
+            if (nextBtn) {
+                nextBtn.click();
+            } else {
+                // Fallback: Click first recommended video in feed
+                const firstRec = document.querySelector("ytm-compact-video-renderer a, ytm-video-with-context-renderer a");
+                if (firstRec) firstRec.click();
+            }
+        });
 
-      const sabr = new SabrStream({
-        videoId: info.basic_info.id,
-        cpn: info.cpn,
-        serverAbrStreamingUrl: serverAbrUrl,
-        formats: sabrFormats,
-        clientInfo: { clientName: 1, clientVersion: yt.session.context.client.clientVersion, osName: 'Windows', osVersion: '10.0' }
-      });
+        // 4. PREVIOUS TRACK / REWIND BUTTON Action
+        navigator.mediaSession.setActionHandler("previoustrack", () => {
+            const vid = document.querySelector("video");
+            if (vid) {
+                if (vid.currentTime > 4) {
+                    vid.currentTime = 0; // Restart video if played > 4s
+                } else {
+                    window.history.back(); // Go to previous video
+                }
+            }
+        });
 
-      const enabledTrack = audioOnlyItag ? EnabledTrackTypes.AUDIO_ONLY : (vItag && aItag ? EnabledTrackTypes.VIDEO_AND_AUDIO : EnabledTrackTypes.VIDEO_ONLY);
-      const targetVideo = sabrFormats.find(s => s.itag == vItag);
-      const targetAudio = sabrFormats.find(s => s.itag == (audioOnlyItag || aItag));
+        // 5. SEEK FORWARD / BACKWARD (10s)
+        navigator.mediaSession.setActionHandler("seekforward", (details) => {
+            const vid = document.querySelector("video");
+            if (vid) vid.currentTime = Math.min(vid.currentTime + (details.seekOffset || 10), vid.duration);
+        });
 
-      const { videoStream, audioStream } = await sabr.start({
-        preferMp4: true,
-        videoFormat: () => targetVideo,
-        audioFormat: () => targetAudio,
-        enabledTrackTypes: enabledTrack
-      });
+        navigator.mediaSession.setActionHandler("seekbackward", (details) => {
+            const vid = document.querySelector("video");
+            if (vid) vid.currentTime = Math.max(vid.currentTime - (details.seekOffset || 10), 0);
+        });
 
-      const ts = Date.now();
-      const vFileName = `${safeTitle}_v_${ts}.mp4`;
-      const aFileName = `${safeTitle}_a_${ts}.mp4`;
-
-      const tasks = [];
-      if (videoStream) tasks.push(pipeBinaryStream(videoStream, vFileName));
-      if (audioStream) tasks.push(pipeBinaryStream(audioStream, aFileName));
-
-      await Promise.all(tasks);
-
-      if (vItag && aItag) {
-        window.Android?.showToast?.("Muxing Video & Audio Formats...");
-        window.Android?.muxVideoAudio?.(vFileName, aFileName, `${safeTitle}_${ts}.mp4`);
-      }
-
-      window.Android?.showToast?.("✅ Download & Muxing Finished!");
-    } catch (e) {
-      window.Android?.showToast?.("Download Failed: " + e.message);
-    } finally {
-      // Auto-remove Floating Animation on Complete!
-      indicator?.remove();
-    }
-  }
-
-  function createLiveDownloadIndicator() {
-    let el = document.getElementById("ytproDlIndicator");
-    if (el) return el;
-    el = document.createElement("div");
-    el.id = "ytproDlIndicator";
-    el.innerHTML = `
-      <div style="position:fixed;bottom:25px;right:20px;width:54px;height:54px;border-radius:50%;background:#18181fee;border:2px solid #3ea6ff;display:grid;place-items:center;z-index:9999999;box-shadow:0 10px 30px rgba(62,166,255,0.4);animation:ytproPulse 1.5s infinite;">
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3ea6ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation:ytproDrop 1.2s infinite ease-in-out;"><path d="M12 3v13"/><polyline points="7 11 12 16 17 11"/><path d="M5 21h14"/></svg>
-      </div>
-      <style>
-        @keyframes ytproPulse { 0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(62,166,255,0.6); } 70% { transform: scale(1.05); box-shadow: 0 0 0 12px rgba(62,166,255,0); } 100% { transform: scale(1); } }
-        @keyframes ytproDrop { 0%, 100% { transform: translateY(-3px); } 50% { transform: translateY(3px); } }
-      </style>
-    `;
-    document.body.appendChild(el);
-    return el;
-  }
-
-  function pipeBinaryStream(stream, fileName) {
-    return new Promise(async (resolve) => {
-      const reader = stream.getReader();
-      const CHUNK_SIZE = 1024 * 512;
-      let port = null;
-
-      const handler = (ev) => {
-        if (typeof ev.data === "string" && ev.data.startsWith("PORT_FOR:" + fileName)) {
-          port = ev.ports[0];
-          window.removeEventListener("message", handler);
+        // 6. UPDATE PLAYBACK STATE
+        if (video) {
+            video.onplay = () => {
+                window.userPaused = false;
+                navigator.mediaSession.playbackState = "playing";
+            };
+            video.onpause = () => {
+                navigator.mediaSession.playbackState = "paused";
+            };
         }
-      };
-      window.addEventListener("message", handler);
-      window.Android?.requestBinaryPort?.(fileName);
+    }
 
-      while (!port) await new Promise(r => setTimeout(r, 20));
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value?.length) {
-          let offset = 0;
-          while (offset < value.length) {
-            const chunk = value.slice(offset, offset + CHUNK_SIZE).buffer;
-            port.postMessage(chunk);
-            offset += chunk.byteLength;
-          }
+    // Helper: Safe Info Extractor for Video & Channel Name
+    function getVideoInfo() {
+        let vId = new URLSearchParams(window.location.search).get("v");
+        if (!vId && window.location.pathname.includes("/shorts/")) {
+            vId = window.location.pathname.split("/shorts/")[1]?.split("?")[0];
         }
-      }
-      port.postMessage("END");
-      resolve();
+        let titleEl = document.querySelector(".slim-video-metadata-header") ||
+                      document.querySelector(".ytShortsVideoTitleViewModelShortsVideoTitle") ||
+                      document.querySelector("h1.title") ||
+                      document.querySelector("ytm-slim-video-metadata-section-renderer");
+        let title = titleEl ? titleEl.textContent.trim() : document.title.replace("- YouTube", "").trim();
+
+        let authorEl = document.querySelector(".slim-owner-channel-name") || 
+                       document.querySelector(".ytm-channel-thumbnail-with-link-renderer-text");
+        let author = authorEl ? authorEl.textContent.trim() : "YouTube";
+
+        return { videoId: vId || "unknown", title: title || "YouTube Video", author: author };
+    }
+
+    // Floating Download Animation Pill (Auto-Dismissing)
+    function triggerDownloadAnimation(filename) {
+        const animDiv = document.createElement("div");
+        animDiv.style.cssText = `
+            position: fixed; top: 25px; right: 20px; z-index: 999999999;
+            background: ${bgGlass}; border: 1px solid ${borderGlass};
+            backdrop-filter: blur(16px); padding: 10px 16px; border-radius: 20px;
+            display: flex; align-items: center; gap: 12px;
+            box-shadow: 0 12px 35px rgba(0,0,0,0.3); color: ${c};
+            font-size: 13px; font-weight: 600; animation: slideDownIn 0.4s ease forwards;
+        `;
+        animDiv.innerHTML = `
+            <style>
+                @keyframes slideDownIn { from { opacity: 0; transform: translateY(-30px) scale(0.9); } to { opacity: 1; transform: translateY(0) scale(1); } }
+                @keyframes spinCircle { 100% { transform: rotate(360deg); } }
+                .down-spinner { width: 20px; height: 20px; border: 2.5px solid rgba(66, 133, 244, 0.25); border-top-color: #4285f4; border-radius: 50%; animation: spinCircle 0.8s linear infinite; }
+            </style>
+            <div class="down-spinner"></div>
+            <div style="display:flex; flex-direction:column;">
+                <span>Downloading...</span>
+                <span style="font-size:10px; opacity:0.7; max-width:140px; text-overflow:ellipsis; overflow:hidden; white-space:nowrap;">${filename || "Media"}</span>
+            </div>
+        `;
+        document.body.appendChild(animDiv);
+
+        setTimeout(() => {
+            animDiv.style.transition = "all 0.4s ease";
+            animDiv.style.opacity = "0";
+            animDiv.style.transform = "translateY(-20px) scale(0.9)";
+            setTimeout(() => animDiv.remove(), 400);
+        }, 3500);
+    }
+
+    // Gemini Engine with Full Safe Extraction
+    async function geminiInfo() {
+        let responseBox = document.getElementById("GeminiResponse");
+        if (!responseBox) {
+            responseBox = document.createElement("div");
+            responseBox.id = "GeminiResponse";
+            responseBox.style.cssText = `
+                min-height: 80px; max-height: 380px; overflow-y: auto; width: calc(100% - 30px);
+                margin: 10px auto; padding: 16px; border-radius: 20px; background: ${cardBg};
+                border: 1px solid ${borderGlass}; backdrop-filter: blur(12px); color: ${c};
+                font-size: 13.5px; line-height: 1.6;
+            `;
+            const mainDiv = document.getElementById("ytproMainDivE");
+            if (mainDiv) mainDiv.after(responseBox);
+            else document.body.appendChild(responseBox);
+        }
+
+        responseBox.innerHTML = `
+            <div style="display:flex; align-items:center; gap:10px; font-weight:600;">
+                <div style="width:14px; height:14px; border-radius:50%; background:linear-gradient(135deg, #4285f4, #9b72cb); animation:spinCircle 1s infinite linear;"></div>
+                Analyzing video details with Gemini AI...
+            </div>
+        `;
+
+        const vInfo = getVideoInfo();
+        const cookies = typeof Android !== "undefined" && Android.getAllCookies ? Android.getAllCookies(window.location.href) : "";
+
+        if (cookies.indexOf("__Secure-1PSID=") < 0) {
+            responseBox.innerHTML = `
+                <div style="text-align:center; padding: 10px;">
+                    <p style="margin-bottom:12px; opacity:0.8;">Sign in to your Google account to use Gemini AI.</p>
+                    <a href="https://accounts.google.com/ServiceLogin?service=youtube" style="display:inline-block; padding:8px 20px; border-radius:20px; background:${c}; color:${dc}; font-weight:600; text-decoration:none;">Sign In</a>
+                </div>
+            `;
+            return;
+        }
+
+        let cookieHeader = cookies.split(";").filter(e => e.includes("__Secure-1PSID=") || e.includes("__Secure-1PSIDTS=")).join("; ");
+        let promptTemplate = localStorage.getItem("prompt") || "Summary of {title} (ID: {videoId})";
+        let promptFinal = promptTemplate.replaceAll("{title}", vInfo.title).replaceAll("{videoId}", vInfo.videoId).replaceAll("{url}", window.location.href);
+
+        try {
+            if (typeof Android !== "undefined" && Android.getSNlM0e) {
+                Android.getSNlM0e(cookieHeader);
+                GeminiAT = await callbackSNlM0e();
+            }
+            const payload = JSON.stringify([null, JSON.stringify([[promptFinal], null, null])]);
+            const params = new URLSearchParams();
+            params.append("f.req", payload);
+            params.append("at", GeminiAT);
+
+            const headers = JSON.stringify({
+                "accept": "*/*",
+                "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "x-goog-ext-525001261-jspb": GeminiModels[localStorage.getItem("geminiModel")] || GeminiModels["3.0 Flash"],
+                "cookie": cookieHeader,
+                "Referer": "https://gemini.google.com/"
+            });
+
+            if (typeof Android !== "undefined" && Android.GeminiClient) {
+                Android.GeminiClient("https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate", headers, params.toString());
+                const res = await callbackGeminiClient();
+                handleGeminiResponse(res);
+            }
+        } catch (err) {
+            responseBox.innerHTML = `<div style="color:#ef4444;">Error generating response: ${err.message}</div>`;
+        }
+    }
+
+    // Modern Settings Sheet
+    function openSettings() {
+        let existing = document.getElementById("settingsprodiv");
+        if (existing) existing.remove();
+
+        const wrapper = document.createElement("div");
+        wrapper.id = "settingsprodiv";
+        wrapper.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(8px);
+            z-index: 99999999; display: flex; align-items: flex-end; justify-content: center;
+        `;
+
+        const panel = document.createElement("div");
+        panel.style.cssText = `
+            width: 100%; max-width: 480px; max-height: 85vh;
+            background: ${bgGlass}; border: 1px solid ${borderGlass};
+            border-radius: 28px 28px 0 0; padding: 22px 20px 30px;
+            box-shadow: 0 -10px 40px rgba(0,0,0,0.5); overflow-y: auto;
+            color: ${c}; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        `;
+
+        panel.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <div style="width:36px; height:36px; border-radius:12px; background:linear-gradient(135deg, #FF0033, #FF4500); display:flex; align-items:center; justify-content:center; color:#fff;">
+                        ${Icons.play}
+                    </div>
+                    <div>
+                        <h2 style="font-size:18px; font-weight:700; margin:0;">YouTube Pro</h2>
+                        <span style="font-size:11px; opacity:0.6;">v${YTProVer} • Next-Gen Studio</span>
+                    </div>
+                </div>
+                <button id="closeSetBtn" style="background:transparent; border:0; color:${c}; opacity:0.6; padding:5px;">✕</button>
+            </div>
+
+            <!-- Quick Navigation -->
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:16px;">
+                <div id="btnGoDownload" style="background:${cardBg}; border:1px solid ${borderGlass}; border-radius:18px; padding:12px; display:flex; align-items:center; gap:10px; cursor:pointer;">
+                    <div style="color:#3b82f6;">${Icons.download}</div>
+                    <span style="font-size:13px; font-weight:600;">Downloads</span>
+                </div>
+                <div id="btnGoLiked" style="background:${cardBg}; border:1px solid ${borderGlass}; border-radius:18px; padding:12px; display:flex; align-items:center; gap:10px; cursor:pointer;">
+                    <div style="color:#ec4899;">${Icons.heart}</div>
+                    <span style="font-size:13px; font-weight:600;">Liked Videos</span>
+                </div>
+            </div>
+
+            <!-- Toggle Items with Icons -->
+            <div style="display:flex; flex-direction:column; gap:8px;">
+                ${renderToggleItem("bgplay", Icons.play, "Background Playback", "Notification controls enabled")}
+                ${renderToggleItem("autoSpn", Icons.skip, "Auto-skip Sponsors", "Skip sponsor segments automatically")}
+                ${renderToggleItem("gesC", Icons.hand, "Gesture Controls", "Brightness & volume swipes")}
+                ${renderToggleItem("loopVideo", Icons.repeat, "Video Loop", "Auto repeat current video")}
+                ${renderToggleItem("shorts", Icons.play, "Hide Shorts Feed", "Remove Shorts tab and shelf")}
+                ${renderToggleItem("saveCInfo", Icons.sparkles, "Gemini Context Retention", "Remember previous AI chat history")}
+                ${renderToggleItem("devMode", Icons.code, "Developer Mode", "Enable Eruda inspect console")}
+            </div>
+        `;
+
+        wrapper.appendChild(panel);
+        document.body.appendChild(wrapper);
+
+        wrapper.onclick = (e) => { if (e.target === wrapper) wrapper.remove(); };
+        panel.querySelector("#closeSetBtn").onclick = () => wrapper.remove();
+        panel.querySelector("#btnGoDownload").onclick = () => { wrapper.remove(); openDownloadHub(); };
+        panel.querySelector("#btnGoLiked").onclick = () => { wrapper.remove(); window.location.hash = "#hearts"; };
+
+        panel.querySelectorAll("[data-toggle-key]").forEach(el => {
+            el.onclick = () => {
+                const key = el.dataset.toggleKey;
+                const cur = localStorage.getItem(key) === "true";
+                localStorage.setItem(key, String(!cur));
+                if (key === "bgplay" && typeof Android !== "undefined" && Android.setBgPlay) {
+                    Android.setBgPlay(!cur);
+                }
+                openSettings();
+            };
+        });
+    }
+
+    function renderToggleItem(key, iconSvg, title, subtitle) {
+        const val = localStorage.getItem(key) === "true";
+        return `
+            <div data-toggle-key="${key}" style="background:${cardBg}; border:1px solid ${borderGlass}; border-radius:16px; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; cursor:pointer;">
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <div style="opacity:0.85;">${iconSvg}</div>
+                    <div style="display:flex; flex-direction:column;">
+                        <span style="font-size:13.5px; font-weight:600;">${title}</span>
+                        <span style="font-size:11px; opacity:0.6;">${subtitle}</span>
+                    </div>
+                </div>
+                <div style="width:42px; height:24px; border-radius:24px; background:${val ? "#3b82f6" : (isD ? "#333" : "#ccc")}; position:relative; transition:all 0.25s;">
+                    <div style="width:18px; height:18px; border-radius:50%; background:#fff; position:absolute; top:3px; left:${val ? "21px" : "3px"}; transition:all 0.25s;"></div>
+                </div>
+            </div>
+        `;
+    }
+
+    // Modern Download Page with Clear Data
+    function openDownloadHub() {
+        let existing = document.getElementById("outerdownytprodiv");
+        if (existing) existing.remove();
+
+        const vInfo = getVideoInfo();
+        const wrapper = document.createElement("div");
+        wrapper.id = "outerdownytprodiv";
+        wrapper.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(8px);
+            z-index: 99999999; display: flex; align-items: flex-end; justify-content: center;
+        `;
+
+        const sheet = document.createElement("div");
+        sheet.style.cssText = `
+            width: 100%; max-width: 480px; max-height: 85vh;
+            background: ${bgGlass}; border: 1px solid ${borderGlass};
+            border-radius: 28px 28px 0 0; padding: 22px 20px 30px;
+            box-shadow: 0 -10px 40px rgba(0,0,0,0.5); overflow-y: auto;
+            color: ${c}; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        `;
+
+        sheet.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="color:#3b82f6;">${Icons.download}</span>
+                    <h3 style="font-size:17px; font-weight:700; margin:0;">Download Center</h3>
+                </div>
+                <button id="closeDownBtn" style="background:transparent; border:0; color:${c}; opacity:0.6; padding:5px;">✕</button>
+            </div>
+
+            <div style="background:${cardBg}; border:1px solid ${borderGlass}; border-radius:16px; padding:12px; margin-bottom:16px;">
+                <span style="font-size:12px; font-weight:600; opacity:0.6; display:block; margin-bottom:4px;">Target Media</span>
+                <p style="font-size:13px; font-weight:600; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${vInfo.title}</p>
+            </div>
+
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:16px;">
+                <div id="btnDLVideo" style="background:${cardBg}; border:1px solid ${borderGlass}; border-radius:16px; padding:14px; text-align:center; cursor:pointer;">
+                    <div style="font-size:14px; font-weight:700;">Full Video (MP4)</div>
+                    <span style="font-size:11px; opacity:0.6;">Direct Video Stream</span>
+                </div>
+                <div id="btnDLAudio" style="background:${cardBg}; border:1px solid ${borderGlass}; border-radius:16px; padding:14px; text-align:center; cursor:pointer;">
+                    <div style="font-size:14px; font-weight:700;">Audio Only (MP3)</div>
+                    <span style="font-size:11px; opacity:0.6;">High Quality Audio</span>
+                </div>
+            </div>
+
+            <!-- Clear Data Button at Bottom -->
+            <div style="border-top:1px solid ${borderGlass}; padding-top:16px; margin-top:12px;">
+                <button id="btnClearAppData" style="width:100%; border:1px solid rgba(239,68,68,0.3); background:rgba(239,68,68,0.1); color:#ef4444; border-radius:16px; padding:12px; font-size:13.5px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:8px; cursor:pointer;">
+                    ${Icons.trash}
+                    <span>Clear App Data & Cache</span>
+                </button>
+            </div>
+        `;
+
+        wrapper.appendChild(sheet);
+        document.body.appendChild(wrapper);
+
+        wrapper.onclick = (e) => { if (e.target === wrapper) wrapper.remove(); };
+        sheet.querySelector("#closeDownBtn").onclick = () => wrapper.remove();
+
+        sheet.querySelector("#btnDLVideo").onclick = () => {
+            triggerDownloadAnimation(vInfo.title);
+            if (typeof window.ytproSabrDownload === "function") window.ytproSabrDownload();
+            else if (typeof Android !== "undefined" && Android.downvid) Android.downvid(vInfo.title + ".mp4", window.location.href, "video/mp4");
+            wrapper.remove();
+        };
+
+        sheet.querySelector("#btnDLAudio").onclick = () => {
+            triggerDownloadAnimation(vInfo.title + ".mp3");
+            if (typeof Android !== "undefined" && Android.downvid) Android.downvid(vInfo.title + ".mp3", window.location.href, "audio/mp3");
+            wrapper.remove();
+        };
+
+        sheet.querySelector("#btnClearAppData").onclick = () => {
+            if (confirm("Clear all cache, custom prompt, and saved configurations?")) {
+                localStorage.clear();
+                window.location.reload();
+            }
+        };
+    }
+
+    // Attach Fast Action Buttons Under Player
+    function attachModernActionButtons() {
+        if (window.location.pathname.indexOf("watch") < 0) return;
+        if (document.getElementById("ytproMainDivE")) return;
+
+        const anchor = document.querySelector(".slim-video-action-bar-actions") || document.querySelector("ytm-slim-video-action-bar-renderer");
+        if (!anchor) return;
+
+        const bar = document.createElement("div");
+        bar.id = "ytproMainDivE";
+        bar.style.cssText = "display:flex; gap:8px; overflow-x:auto; padding:8px 14px; scrollbar-width:none; align-items:center; width:100%;";
+
+        bar.innerHTML = `
+            <div id="btnMainGemini" style="display:flex; align-items:center; gap:6px; padding:6px 14px; border-radius:20px; background:linear-gradient(135deg, rgba(66,133,244,0.15), rgba(217,101,112,0.15)); border:1px solid rgba(155, 114, 203, 0.4); color:${c}; font-size:12.5px; font-weight:600; cursor:pointer; flex-shrink:0;">
+                ${Icons.sparkles} <span>Gemini AI</span>
+            </div>
+            <div id="btnMainDownload" style="display:flex; align-items:center; gap:6px; padding:6px 14px; border-radius:20px; background:${cardBg}; border:1px solid ${borderGlass}; color:${c}; font-size:12.5px; font-weight:600; cursor:pointer; flex-shrink:0;">
+                ${Icons.download} <span>Download</span>
+            </div>
+            <div id="btnMainSettings" style="display:flex; align-items:center; gap:6px; padding:6px 14px; border-radius:20px; background:${cardBg}; border:1px solid ${borderGlass}; color:${c}; font-size:12.5px; font-weight:600; cursor:pointer; flex-shrink:0;">
+                ${Icons.settings} <span>Settings</span>
+            </div>
+        `;
+
+        anchor.after(bar);
+        bar.querySelector("#btnMainGemini").onclick = () => geminiInfo();
+        bar.querySelector("#btnMainDownload").onclick = () => openDownloadHub();
+        bar.querySelector("#btnMainSettings").onclick = () => openSettings();
+    }
+
+    // Core Observers & Dynamic Media Session Sync
+    const coreObserver = new MutationObserver(() => {
+        attachModernActionButtons();
+        setupMediaSession();
+        
+        // Loop toggle support
+        if (localStorage.getItem("loopVideo") === "true") {
+            const vid = document.querySelector("video");
+            if (vid && !vid.loop) vid.loop = true;
+        }
     });
-  }
 
-  // ==========================================
-  // 10. EXTRA SPEED CONTROLLER (10x)
-  // ==========================================
-  function injectExtraSpeed() {
-    const slider = document.getElementById("slider");
-    if (slider && slider.max !== "10") {
-      slider.max = "10";
-      slider.addEventListener("input", () => {
-        const v = document.querySelector(".video-stream");
-        if (v) v.playbackRate = parseFloat(slider.value);
-      });
-    }
-  }
+    coreObserver.observe(document.body, { childList: true, subtree: true });
 
-  // ==========================================
-  // 11. GESTURES & ACTION BARS INJECTION
-  // ==========================================
-  function injectTopBarButtons() {
-    if (window.location.pathname.includes("/watch") && !document.getElementById("ytproWatchActionBar")) {
-      const container = document.querySelector(".slim-video-action-bar-actions");
-      if (!container) return;
-
-      const bar = document.createElement("div");
-      bar.id = "ytproWatchActionBar";
-      bar.style.cssText = "display:flex;gap:8px;padding:8px 12px;overflow-x:auto;scrollbar-width:none;";
-
-      const createBtn = (title, icon, fn) => {
-        const b = document.createElement("button");
-        b.style.cssText = "display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.1);color:#fff;padding:7px 14px;border-radius:20px;font-size:12px;font-weight:600;flex-shrink:0;cursor:pointer;";
-        b.innerHTML = `${icon} <span>${title}</span>`;
-        b.onclick = fn;
-        return b;
-      };
-
-      bar.appendChild(createBtn("Download", icons.download, () => window.ytproSabrDownload()));
-      bar.appendChild(createBtn("Heart", icons.heart, toggleHeart));
-      bar.appendChild(createBtn("PIP", icons.pip, () => {
-        const v = document.querySelector(".video-stream");
-        if (v && window.Android?.pipvid) {
-          v.getBoundingClientRect().height > v.getBoundingClientRect().width ? window.Android.pipvid("portrait") : window.Android.pipvid("landscape");
-        }
-      }));
-      bar.appendChild(createBtn("Settings", icons.settings, openSettings));
-
-      container.parentNode.insertBefore(bar, container.nextSibling);
-    }
-  }
-
-  // Global Navigation & Mutation Listeners
-  window.addEventListener("hashchange", () => {
-    if (window.location.hash === "#download") window.ytproSabrDownload();
-    if (window.location.hash === "#settings") openSettings();
-    if (window.location.hash === "#hearts") showHeartsLibrary();
-  });
-
-  const domObserver = new MutationObserver(() => {
-    cleanupAds();
-    injectTopBarButtons();
-    injectExtraSpeed();
-    updateDislikeDOM();
-  });
-  domObserver.observe(document.body, { childList: true, subtree: true });
-
-  window.addEventListener("load", () => {
-    fetchDislikes(window.location.href);
-    checkSponsors(window.location.href);
-  });
-
-})();
+    window.addEventListener("hashchange", () => {
+        if (window.location.hash === "#download") openDownloadHub();
+        if (window.location.hash === "#settings") openSettings();
+    });
+}
